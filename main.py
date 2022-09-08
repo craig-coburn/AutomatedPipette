@@ -1,0 +1,645 @@
+"""This program controls the CNC Liquid Handler with object-oriented Pything GUI using tkinter.
+
+Input:
+
+
+Output:
+
+
+Notes:
+
+
+References:
+    https://geekscoders.com/tkinter-tutorial-build-gui-in-python-with-tkinter/
+    https://github.com/stonetronics/stoneGcodeSender
+    https://forum.arduino.cc/t/demo-of-pc-arduino-comms-using-python/219184/5
+    https://github.com/DrD-Flo/OTTO/blob/master/assets/download/G-code-Interpreter-OTTO-Arduino-Firmware.ino
+    https://roboticsbackend.com/arduino-interrupts/
+
+    Inspiration:
+    https://codereview.stackexchange.com/questions/240378/tkinter-gui-for-running-hplc-pumps-real-time-data-visualization
+
+    Might be useful when create canvas class:
+    https://en.wikiversity.org/wiki/Object-Oriented_Programming/GUI_Applications/Python3
+
+    Might be useful for graph:
+    https://pythonprogramming.net/how-to-embed-matplotlib-graph-tkinter-gui/
+
+    Helpful:
+    https://stackoverflow.com/questions/38229857/how-to-avoid-attributeerror-tkinter-tkapp-object-has-no-attribute-passcheck
+"""
+
+
+import tkinter as tk
+import tkinter.scrolledtext as st
+from tkinter import *
+from tkmacosx import Button
+
+# For serial port enlistment
+import sys
+import glob
+import serial
+from tkinter import filedialog
+
+# Plotting
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
+
+# Temporary requirement
+import numpy as np
+
+# Global variables
+global port
+global connected
+startMarker = '<'
+endMarker = '>'
+oldBuf = ""
+xPosAbs = 0.0
+yPosAbs = 0.0
+zPosAbs = 0.0
+coordList = []
+
+class MainWindow(tk.Frame):
+
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent, *args, **kwargs)
+        self.parent = parent
+        self.initUI()
+
+
+    def initUI(self):
+        """ Configure root window """
+        self.parent.title("Liquid Handler Python GUI")
+        self.parent.geometry('1450x780')
+        self.parent.columnconfigure(0, weight=2)
+        self.parent.columnconfigure(1, weight=4)
+        self.parent.columnconfigure(2, weight=1)
+
+        """ Column 0 """
+
+        # Serial port chooser
+        self.serialPortChooserLabel = tk.Label(self.parent, text='Serial Port:')
+        self.serialPortChooserLabel.grid(column=0, row=0, sticky=tk.W, padx=5, pady=5)
+        self.serialPortSelection = tk.StringVar()
+        self.serialPortSelection.set('')
+        self.serialPortOptionMenu = tk.OptionMenu(self.parent, self.serialPortSelection, *self.getSerialPorts())
+        self.serialPortOptionMenu.grid(column=0, row=1, sticky=tk.EW, padx=5, pady=5)
+
+        # Update serial port list
+        self.serialPortUpdaterLabel = tk.Label(self.parent, text='Update Serial Ports List')
+        self.serialPortUpdaterLabel.grid(column=0, row=2, sticky=tk.W, padx=5, pady=5)
+        self.serialPortUpdateButton = Button(self.parent, text='Update', command=self.updateSerialPortOptionMenu)
+        self.serialPortUpdateButton.grid(column=0, row=3, sticky=tk.EW, padx=5, pady=5)
+
+        # Baud rate
+        self.baudRateLabel = tk.Label(self.parent, text='Baud Rate:')
+        self.baudRateLabel.grid(column=0, row=4, sticky=tk.W, padx=5, pady=5)
+        self.baudRateEntry = tk.StringVar()
+        self.baudRateEntry.set('9600')
+        Baudlist = ['2400', '4800', '9600', '19200', '38400', '57600', '115200', '230400', '250000']
+        self.baudRateOptionMenu = tk.OptionMenu(self.parent, self.baudRateEntry, *Baudlist)
+        self.baudRateOptionMenu.grid(column=0, row=5, sticky=tk.EW, padx=5, pady=5)
+
+        # Connection status
+        self.statusLabel = tk.Label(self.parent, text='Connection Status:')
+        self.statusLabel.grid(column=0, row=6, sticky=tk.W, padx=5, pady=5)
+        self.statusIndicator = tk.Text(self.parent, width=14, height=1)
+        self.statusIndicator.grid(column=0, row=7, sticky=tk.EW, padx=5, pady=5)
+        self.statusIndicator.insert(tk.END, 'DISCONNECTED')
+        self.connectButton = Button(self.parent, text="Connect", fg='green',command=self.connect)
+        self.connectButton.grid(column=0, row=8, sticky=tk.EW, padx=5, pady=5)
+        self.disconnectButton = Button(self.parent, text="Disconnect", fg='red',command=self.disconnect)
+        self.disconnectButton.grid(column=0, row=9, sticky=tk.EW, padx=5, pady=5)
+
+        # G-Code import
+        self.gcodeSettingsLabel = tk.Label(self.parent, text="Import G-Code")
+        self.gcodeSettingsLabel.grid(column=0, row=10, sticky=tk.W, padx=5, pady=5)
+        self.fileLabel = tk.Label(self.parent, text="File:")
+        self.fileLabel.grid(column=0, row=11, sticky=tk.W, padx=5, pady=5)
+        self.selectedFilePath = ''
+        self.fileChooserEntryVar = tk.StringVar()
+        self.fileChooserEntry = tk.Entry(self.parent, textvariable=self.fileChooserEntryVar)
+        self.fileChooserEntry.grid(column=0, row=12, sticky=tk.EW, padx=5, pady=5)
+
+        #TODO: Add SaveAs button for custom gcode files generated by path
+
+        # Buttons for browse, load and save
+        self.browseButton = Button(self.parent, text='Browse',width=100, command=self.chooseFile)
+        self.browseButton.grid(column=0, row=13, sticky=tk.W, padx=5, pady=5)
+        self.loadButton = Button(self.parent, text='Load  ',width=100, command=self.loadFile)
+        self.loadButton.grid(column=0, row=13, padx=5, pady=5)
+        self.saveButton = Button(self.parent, text='Save  ',width=100, command=self.saveFile)
+        self.saveButton.grid(column=0, row=13, sticky=tk.E, padx=5, pady=5)
+
+        # File Display
+        self.fileDisplayLabel = tk.Label(self.parent, text="Loaded G-code File:")
+        self.fileDisplayLabel.grid(column=0, row=14, sticky=tk.W, padx=5, pady=5)
+        self.fileDisplayText = st.ScrolledText(self.parent, width=20, height=10)
+        self.fileDisplayText.grid(column=0,row=15,rowspan=2,sticky=tk.EW,padx=5, pady=5)
+        # self.fileAsString = str(self.fileDisplayText.get("1.0", "end-1c"))
+
+        # Send G-Code Button
+        self.sendButtonLabel = tk.Label(self.parent, text='Send G-Code to Machine')
+        self.sendButtonLabel.grid(column=0,row=18,rowspan=2,sticky=tk.W,padx=5, pady=5)
+        self.sendButton = Button(self.parent, text='Send', command=self.sendGcode)
+        self.sendButton.grid(column=0, row=20, sticky=tk.EW, padx=5, pady=5)
+
+        """ Column 1 """
+
+        # Motor jog multiplier
+        self.motorJogLabel = tk.Label(self.parent, text="Control")
+        self.motorJogLabel.grid(column=1, row=0, sticky=tk.W, padx=5, pady=5)
+
+        # Step size XY
+        self.stepXYLabel = tk.Label(self.parent, text="Step size XY (mm):")
+        self.stepXYLabel.grid(column=1, row=1, sticky=tk.W, padx=5, pady=5)
+        self.stepXY = tk.StringVar()
+        self.stepXY.set('1')
+        self.stepXYOptionMenu = tk.OptionMenu(self.parent, self.stepXY, *["0.1", "1", "10"])
+        self.stepXYOptionMenu.grid(column=1, row=2, sticky=tk.EW, padx=5, pady=5)
+
+        # Step size Z
+        self.stepZLabel = tk.Label(self.parent, text="Step size Z (mm):")
+        self.stepZLabel.grid(column=1, row=3, sticky=tk.W, padx=5, pady=5)
+        self.stepZ = tk.StringVar()
+        self.stepZ.set('1')
+        self.stepZOptionMenu = tk.OptionMenu(self.parent, self.stepZ, *["0.1", "1", "10"])
+        self.stepZOptionMenu.grid(column=1, row=4, sticky=tk.EW, padx=5, pady=5)
+
+        #TODO: Options for step size XY, step size Z and feed rate
+
+        # Motor jog direction
+        butW = 100
+        self.xPos = Button(self.parent, text='x+', width = butW,command=self.jogCNC_xp)
+        self.xPos.grid(column=1, row=6, sticky=tk.E, padx=5, pady=5)
+        self.xNeg = Button(self.parent, text='x-', width = butW,command=self.jogCNC_xn)
+        self.xNeg.grid(column=1, row=6, sticky=tk.W, padx=5, pady=5)
+        self.yPos = Button(self.parent, text='y+', width = butW,command=self.jogCNC_yp)
+        self.yPos.grid(column=1, row=5, sticky=tk.N, padx=5, pady=5)
+        self.yNeg = Button(self.parent, text='y-', width = butW,command=self.jogCNC_yn)
+        self.yNeg.grid(column=1, row=7, sticky=tk.S, padx=5, pady=5)
+        self.zPos = Button(self.parent, text='z+', width = butW,command=self.jogCNC_zp)
+        self.zPos.grid(column=1, row=5, sticky=tk.NE, padx=5, pady=5)
+        self.zNeg = Button(self.parent, text='z-', width = butW,command=self.jogCNC_zn)
+        self.zNeg.grid(column=1, row=7, sticky=tk.SE, padx=5, pady=5)
+
+        #TODO: Plunge function to actuate servo
+        self.plunge = Button(self.parent, text='Plunge', width = butW,command=self.moveServo)
+        self.plunge.grid(column=1, row=6, padx=5, pady=5)
+
+        # Serial output textbox
+        self.serialMonitor = tk.Label(self.parent, text='Serial Monitor')
+        self.serialMonitor.grid(column=1, row=8,sticky=tk.W, padx=5, pady=5)
+        self.text_box = st.ScrolledText(self.parent, width=20, height=32)
+        self.text_box.grid(column=1, row=9, rowspan=12, sticky=tk.EW, padx=5, pady=5)
+
+
+    def getSerialPorts(self):
+        """ Lists serial port names
+            :raises EnvironmentError:
+                On unsupported or unknown platforms
+            :returns:
+                A list of the serial ports available on the system
+        """
+        if sys.platform.startswith('win'):
+            ports = ['COM%s' % (i + 1) for i in range(256)]
+        elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
+            # this excludes your current terminal "/dev/tty"
+            ports = glob.glob('/dev/tty[A-Za-z]*')
+        elif sys.platform.startswith('darwin'):
+            ports = glob.glob('/dev/tty.*')
+        else:
+            raise EnvironmentError('Unsupported platform')
+
+        result = []
+        for port in ports:
+            try:
+                s = serial.Serial(port)
+                s.close()
+                result.append(port)
+            except (OSError, serial.SerialException):
+                pass
+        return result
+
+
+    def updateSerialPortOptionMenu(self):
+        self.packOptionMenuEntries(self.serialPortOptionMenu, *self.getSerialPorts())
+        if connected:
+            port.close()
+
+
+    def packOptionMenuEntries(self,optionMenu, *entries):
+        menu = optionMenu["menu"]
+        menu.delete(0, 'end')
+
+        for entry in entries:
+            menu.add_command(label=entry, command=lambda entry=entry: self.serialPortSelection.set(entry))
+
+
+    def connect(self):
+        global port
+        try:
+            port = serial.Serial(self.serialPortSelection.get(),
+                                     int(self.baudRateEntry.get()), timeout=0,
+                                     writeTimeout=0)  # crude clean up of the port string
+        except IOError:
+            port.close()
+            port.open()
+            print("Port was already open, closed and opened again!")
+
+        connected = True
+        self.statusIndicator.delete('1.0', tk.END)
+        self.statusIndicator.insert(tk.END, 'CONNECTED')
+
+        # Serial monitor window
+        self.readSerial()
+
+
+    def disconnect(self):
+        port.close()
+        connected = False
+        self.statusIndicator.delete('1.0', tk.END)
+        self.statusIndicator.insert(tk.END, 'DISCONNECTED')
+
+
+    def chooseFile(self):
+        global selectedFilePath
+        tmp = filedialog.askopenfilename(initialdir="./", title="select gcode file", filetypes=(
+            ("gcode files", "*.gcode"), ("gc files", "*.gc"), ("nc files", "*.nc"), ("all files", "*.*")))
+        self.fileChooserEntry.delete(0, tk.END)
+        self.fileChooserEntry.insert(tk.INSERT, tmp)
+        selectedFilePath = tmp  # tkinter seems to overwrite the selectedFilePath somehow, so it gets set again here
+
+
+    def loadFile(self):
+        global selectedFilePath
+        selectedFilePath = self.fileChooserEntryVar.get()
+        self.fileDisplayText.delete("1.0", tk.END)
+        gcodeFile = open(selectedFilePath, 'r')
+        self.fileDisplayText.insert(tk.INSERT, gcodeFile.read())
+        gcodeFile.close()
+
+
+    def saveFile(self):
+        global selectedFilePath
+        selectedFilePath = self.fileChooserEntryVar.get()
+        gcodeFile = open(selectedFilePath, 'w')
+        fileContent = self.fileDisplayText.get("1.0", "end-1c")
+        gcodeFile.write(fileContent)
+        gcodeFile.close()
+
+
+    # TODO: Either use this, or find another solution
+    # def waitForArduino(self):
+    #     # wait until the Arduino sends 'Arduino Ready' - allows time for Arduino reset
+    #     # it also ensures that any bytes left over from a previous message are discarded
+    #     msg = ""
+    #     while msg.find("Arduino is ready") == -1:
+    #         while port.inWaiting() == 0:
+    #             pass
+    #         msg = self.recvFromArduino()
+    #         print(msg)
+    #
+    #
+    # def recvFromArduino(self):
+    #     ck = ""
+    #     x = "z"  # any value that is not an end- or startMarker
+    #     byteCount = -1  # to allow for the fact that the last increment will be one too many
+    #     # wait for the start character
+    #     while ord(x) != startMarker:
+    #         x = port.read().decode("ascii")
+    #     # save data until the end marker is found
+    #     while ord(x) != endMarker:
+    #         print(x)
+    #         if ord(x) != startMarker:
+    #             ck = ck + x
+    #             byteCount += 1
+    #         x = port.read().decode("ascii")
+    #
+    #     return ck
+
+
+    def sendGcode(self):
+
+        #TODO: Error if port is undefined
+
+        #TODO: Wait until Arduino is ready so can use interrupts
+        # Required because connecting to board over serial causes all digtal pins to change to active state and triggers lswitch interrupt
+
+        # self.waitForArduino()
+
+        # flush everything
+        port.flushInput()
+        port.flushOutput()
+
+        fileAsString = str(self.fileDisplayText.get("1.0", "end-1c"))
+
+        #TODO: Need to make sure not sending lines one at a time because this does not utilise multistepper
+
+        sendLines = fileAsString.splitlines()
+        for line in sendLines:
+            port.write(str.encode('<'))
+            port.write(line.encode())
+            port.write(str.encode('>'))
+
+
+    # TODO: needs function to home motors (or do this via arduino?)
+
+
+    #TODO: make jogCNC one function rather than 6
+    # Also fix jogging functionality because distance given by Arduino IDE does not align with G-Code from jogging functions
+
+    def jogCNC_xp(self):
+        """ Send G-Code commands based on user input and chosen multiply factor."""
+        global xPosAbs
+        xPosAbs += float(self.stepXY.get())
+        port.write(str.encode(f'<G1 X{xPosAbs}>'))
+        # port.write(str.encode(f'<G1 {}{}>'.format('x',xPosAbs)))
+
+
+    def jogCNC_xn(self):
+        global xPosAbs
+        xPosAbs -= float(self.stepXY.get())
+        port.write(str.encode(f'<G1 X{xPosAbs}>'))
+
+
+    def jogCNC_yp(self):
+        global yPosAbs
+        yPosAbs += float(self.stepXY.get())
+        port.write(str.encode(f'<G1 Y{yPosAbs}>'))
+
+
+    def jogCNC_yn(self):
+        global yPosAbs
+        yPosAbs -= float(self.stepXY.get())
+        port.write(str.encode(f'<G1 Y{yPosAbs}>'))
+
+
+    def jogCNC_zp(self):
+        global zPosAbs
+        zPosAbs += float(self.stepZ.get())
+        port.write(str.encode(f'<G1 Z{zPosAbs}>'))
+
+
+    def jogCNC_zn(self):
+        global zPosAbs
+        zPosAbs -= float(self.stepZ.get())
+        port.write(str.encode(f'<G1 Z{zPosAbs}>'))
+
+    def moveServo(self):
+        port.write(str.encode('<P1 0.4>')) # Move Servo to 40% of it's range
+        # TODO: this is currently not doing anything...
+
+
+    def readSerial(self):
+        newBuf = ""
+        while True:
+            c = port.readline().decode("ascii")  # attempt to read a character from Serial
+            # was anything read?
+            if len(c) == 0:
+                break
+
+            # get the buffer from outside of this function
+
+            global oldBuf
+
+            # check if character is a delimeter
+            if c == '\r':
+                c = ''  # don't want returns. chuck it
+            if c == '\n':
+                newBuf += "\n"  # add the newline to the buffer
+
+                # add the line to the TOP of the log
+                # log.insert('0.0', serBuffer)
+                newBuf = ""  # empty the buffer
+            else:
+                newBuf += c  # add to the buffer
+        if newBuf != oldBuf:
+            self.text_box.insert(tk.END, newBuf)
+            # Always show most up to date output
+            self.text_box.yview(tk.END)
+        oldBuf = newBuf
+
+        # text_box.insert(tk.END, serBuffer)
+        self.after(10, self.readSerial)  # check serial again soon
+
+
+class DrawWindow(tk.Canvas):
+
+    """ Creates drawing canvas """
+    def __init__(self, parent, *args, **kwargs):
+        tk.Canvas.__init__(self, parent, *args, **kwargs)
+        self.parent = parent
+        self.initCanvas()
+        # Bind onclick() function to left mouse button
+        self.canvas.bind('<Button-1>', self.onclick)
+        self.genDest = ''
+        self.genSource = ''
+
+
+    def initCanvas(self):
+
+        self.sourceLoc = {
+            # Row 1: X1, X2, X3
+            8: (40, 40), 11: (60, 40), 14: (80, 40),
+            # Row 2: Y1, Y2, Y3
+            9: (40, 60), 12: (60, 60), 15: (80, 60),
+            # Row 3: Z1, Z2, Z3
+            10: (40, 80), 13: (60, 80), 16: (80, 80),
+        }
+
+        self.destLoc = {
+            # Row 1: A1, A2, A3, A4, A5
+            26: (140, 40), 29: (160, 40), 32: (180, 40), 35: (200, 40), 38: (220, 40),
+            # Row 2: B1, B2, B3, B4, B5
+            27: (140, 60), 30: (160, 60), 33: (180, 60), 36: (200, 60), 39: (220, 60),
+            # Row 3: C1, C2, C3, C4, C5
+            28: (140, 80), 31: (160, 80), 34: (180, 80), 37: (200, 80), 40: (220, 80)
+        }
+
+        # print(self.itemsLoc[8][0])
+
+        self.canvas = Canvas(self.parent)
+        self.canvas.config(height=200)
+        self.genPathLabel = tk.Label(self.parent, text='Generate Path:')
+        self.genPathLabel.grid(column=2, row=0, sticky=tk.W, padx=5, pady=5)
+        self.sourceLabel = tk.Label(self.parent, text='Source:')
+        self.sourceLabel.grid(column=2, row=1, sticky=tk.W, padx=5, pady=5)
+        self.destLabel = tk.Label(self.parent, text='Destination:')
+        self.destLabel.grid(column=2, row=1, padx=5, pady=5)
+
+        """ Source rectangle """
+        self.canvas.grid(column=2, row=2, sticky=tk.EW, rowspan=6)
+        self.canvas.create_rectangle(10, 10, 270, 200, outline='black')
+        self.canvas.create_text(35, 50, text="X", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(35, 105, text="Y", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(35, 160, text="Z", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(70, 20, text="1", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(140, 20, text="2", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(210, 20, text="3", fill="black", font=('Helvetica 15 bold'))
+
+        # Circles
+        self.create_circle(70, 50, 20, self.canvas)  # LHS
+        self.create_circle(70, 105, 20, self.canvas)
+        self.create_circle(70, 160, 20, self.canvas)
+        self.create_circle(140, 50, 20, self.canvas)  # MIDDLE
+        self.create_circle(140, 105, 20, self.canvas)
+        self.create_circle(140, 160, 20, self.canvas)
+        self.create_circle(210, 50, 20, self.canvas)  # RHS
+        self.create_circle(210, 105, 20, self.canvas)
+        self.create_circle(210, 160, 20, self.canvas)
+
+        """ Destination rectangle """
+        self.canvas.create_rectangle(280, 10, 550, 200, outline='black')
+        self.canvas.create_text(295, 50, text="A", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(295, 105, text="B", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(295, 160, text="C", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(325, 20, text="1", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(370, 20, text="2", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(415, 20, text="3", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(460, 20, text="4", fill="black", font=('Helvetica 15 bold'))
+        self.canvas.create_text(505, 20, text="5", fill="black", font=('Helvetica 15 bold'))
+
+        # Circles
+        self.create_circle(325, 50, 15, self.canvas)  # col 1
+        self.create_circle(325, 105, 15, self.canvas)
+        self.create_circle(325, 160, 15, self.canvas)
+        self.create_circle(370, 50, 15, self.canvas)  # col 2
+        self.create_circle(370, 105, 15, self.canvas)
+        self.create_circle(370, 160, 15, self.canvas)
+        self.create_circle(415, 50, 15, self.canvas)  # col 3
+        self.create_circle(415, 105, 15, self.canvas)
+        self.create_circle(415, 160, 15, self.canvas)
+        self.create_circle(460, 50, 15, self.canvas)  # col 4
+        self.create_circle(460, 105, 15, self.canvas)
+        self.create_circle(460, 160, 15, self.canvas)
+        self.create_circle(505, 50, 15, self.canvas)  # col 5
+        self.create_circle(505, 105, 15, self.canvas)
+        self.create_circle(505, 160, 15, self.canvas)
+
+        # Buttons and labels after canvas
+        self.sendPathLabel = tk.Label(self.parent, text='Send Generated Path:')
+        self.sendPathLabel.grid(column=2, row=8, sticky=tk.W, padx=5, pady=5)
+        self.sendPathButton = Button(self.parent, text='Send', width = 200, command=self.sendGenPath)
+        self.sendPathButton.grid(column=2, row=9, sticky=tk.W, padx=5, pady=5)
+
+
+    def onclick(self,event):
+        """ # Change the color of object when it is clicked
+            from: https://stackoverflow.com/questions/38982313/python-tkinter-identify-object-on-click
+        """
+        item = self.canvas.find_closest(event.x, event.y)
+        item_type = self.canvas.type(item)
+        current_color = self.canvas.itemcget(item, 'fill')
+        if item_type == "oval":
+            if current_color == 'white':
+                self.canvas.itemconfig(item, fill='sky blue')
+            else:
+                self.canvas.itemconfig(item, fill='white')
+
+        """ Generate G-code path """
+        if item[0] in self.sourceLoc:
+            self.genSource += f'G1 X{self.sourceLoc[item[0]][0]} G1 Y{self.sourceLoc[item[0]][1]}\n'
+            self.genSource.splitlines()
+            coordList.append((self.sourceLoc[item[0]][0], self.sourceLoc[item[0]][1]))
+
+        if item[0] in self.destLoc:
+            self.genDest += f'G1 X{self.destLoc[item[0]][0]} G1 Y{self.destLoc[item[0]][1]}\n'
+            self.genDest.splitlines()
+            coordList.append((self.destLoc[item[0]][0], self.destLoc[item[0]][1]))
+
+        #TODO: Fix this, it isn't giving the correct g-code...
+        self.genPath = []
+        print(f'source: {self.genSource}')
+        print(f'dest: {self.genDest}')
+        print(self.genDest)
+        for locA in self.genSource.splitlines():
+            for locB in self.genDest.splitlines():
+                self.genPath.append(locA)
+                self.genPath.append(locB)
+
+        # Return back to zero position
+        self.genPath.append('G1 X0 G1 Y0 G1 Z0')
+        print(self.genPath)
+
+        # Create G-code file as class variable
+        # self.genPathtxt = '\n'.join(self.genPath)
+
+
+    def sendGenPath(self):
+        #TODO: Find way to reuse sendGcode function here (maybe)
+
+        # flush everything
+        port.flushInput()
+        port.flushOutput()
+
+        #TODO: figure out how to get erase g-code data and add option to save these instructions
+
+        # Clear the G-code text window
+        # self.fileDisplayText.delete("1.0", tk.END)
+        # Add generated path to text window
+        # MainWindow.fileDisplayText.insert(tk.INSERT, self.genPathtxt)
+
+
+        for line in self.genPath:
+            port.write(str.encode('<'))
+            port.write(line.encode())
+            port.write(str.encode('>'))
+
+
+    def create_circle(self, x, y, r, canvas):
+        x0 = x - r
+        y0 = y - r
+        x1 = x + r
+        y1 = y + r
+        return self.canvas.create_oval(x0, y0, x1, y1, fill='white')
+
+
+# TODO: figure out how to plot this data LIVE rather than only plot it once
+
+class PlotWindow(tk.Frame):
+
+    def __init__(self, parent, *args, **kwargs):
+        tk.Frame.__init__(self, parent, *args, **kwargs)
+        self.parent = parent
+        self.initGraph()
+
+
+    def initGraph(self):
+        # Plotting label and button
+        self.posLabel = tk.Label(self.parent, text='G-code Plot:')
+        self.posLabel.grid(column=2, row=10, sticky=tk.W, padx=5, pady=5)
+
+        # Create figure
+        fig = plt.figure(figsize=(6, 1), dpi=40)
+        plt.axes(xlim=(0, 290), ylim=(0, 170))
+        # Grid on both axis
+        plt.gca().yaxis.grid(True)
+        plt.gca().xaxis.grid(True)
+        plt.title('Absolute Position')
+        plt.xlabel('X-axis')
+        plt.ylabel('Y-axis')
+        self.plotcanvas = FigureCanvasTkAgg(fig, master=self.parent)
+        # plotcanvas.draw()
+        self.plotcanvas.get_tk_widget().grid(column=2, row=11, rowspan=10, sticky=tk.NS, ipadx=5, ipady=5)
+        self.plotcanvas.get_tk_widget().configure(highlightthickness=1)
+
+        # Button to plot data
+        self.plotData = Button(self.parent, text='Plot G-code Path', width = 200, command=self.plotGraph)
+        self.plotData.grid(column=2, row=9, sticky=tk.E, padx=35, pady=5)
+
+
+    def plotGraph(self):
+        x_val = [x[0] for x in coordList]
+        y_val = [x[1] for x in coordList]
+        plt.plot(x_val, y_val, marker="x")
+        self.plotcanvas.draw()
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    main = MainWindow(root)
+    draw = DrawWindow(root)
+    plot = PlotWindow(root)
+    root.mainloop()
+
