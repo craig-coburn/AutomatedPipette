@@ -40,23 +40,21 @@ import glob
 import serial
 from tkinter import filedialog
 
-# Temporary
-import time
-
 # Plotting
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg, NavigationToolbar2Tk)
+from matplotlib.backends.backend_tkagg import (FigureCanvasTkAgg)
 
 # Global variables
 global port
 global connected
 startMarker = '<'
 endMarker = '>'
-oldBuf = ""
+oldBuf = ''
 xPosAbs = 0.0
 yPosAbs = 0.0
 zPosAbs = 0.0
 coordList = []
+selectedFilePath = ''
 
 class MainWindow(tk.Frame):
 
@@ -69,7 +67,7 @@ class MainWindow(tk.Frame):
     def initUI(self):
         """ Configure root window """
         self.parent.title("Liquid Handler Python GUI")
-        self.parent.geometry('1450x780')
+        self.parent.geometry('1450x800')
         self.parent.columnconfigure(0, weight=2)
         self.parent.columnconfigure(1, weight=4)
         self.parent.columnconfigure(2, weight=1)
@@ -135,36 +133,18 @@ class MainWindow(tk.Frame):
         self.fileDisplayLabel.grid(column=0, row=14, sticky=tk.W, padx=5, pady=5)
         self.fileDisplayText = st.ScrolledText(self.parent, width=20, height=10)
         self.fileDisplayText.grid(column=0,row=15,rowspan=2,sticky=tk.EW,padx=5, pady=5)
-        # self.fileAsString = str(self.fileDisplayText.get("1.0", "end-1c"))
 
         self.testData = []
-        self.testData.append("<G1 X0>")
-        self.testData.append("<G1 X1>")
-        self.testData.append("<G1 X2>")
-        self.testData.append("<G1 X3>")
-        self.testData.append("<G1 X4>")
-        self.testData.append("<G1 X5>")
-        self.testData.append("<G1 X6>")
-        self.testData.append("<G1 X7>")
-        self.testData.append("<G1 X8>")
-        self.testData.append("<G1 X9>")
-        self.testData.append("<G1 X10>")
-        self.testData.append("<G1 X11>")
-        self.testData.append("<G1 X12>")
-        self.testData.append("<G1 X13>")
-        self.testData.append("<G1 X14>")
-        self.testData.append("<G1 15>")
-        self.testData.append("<G1 X16>")
-        self.testData.append("<G1 X17>")
-        self.testData.append("<G1 X18>")
-        self.testData.append("<G1 X0>")
-
+        i = 0
+        while i < 100:
+            self.testData.append(f'G1 X{i}')
+            i += 5
 
         # Send G-Code Button
         self.sendButtonLabel = tk.Label(self.parent, text='Send G-Code to Machine')
-        self.sendButtonLabel.grid(column=0,row=18,rowspan=2,sticky=tk.W,padx=5, pady=5)
-        self.sendButton = tk.Button(self.parent, text='Send', command=self.sendGcode)
-        self.sendButton.grid(column=0, row=20, sticky=tk.EW, padx=5, pady=5)
+        self.sendButtonLabel.grid(column=0,row=17,rowspan=1,sticky=tk.W,padx=5, pady=5)
+        self.sendButton = tk.Button(self.parent, text='Send', command= lambda: self.sendGcode(self.fileAsString))
+        self.sendButton.grid(column=0, row=18, sticky=tk.EW, padx=5, pady=5)
 
         """ Column 1 """
 
@@ -211,7 +191,7 @@ class MainWindow(tk.Frame):
         self.serialMonitor = tk.Label(self.parent, text='Serial Monitor')
         self.serialMonitor.grid(column=1, row=8,sticky=tk.W, padx=5, pady=5)
         self.text_box = st.ScrolledText(self.parent, width=20, height=32)
-        self.text_box.grid(column=1, row=9, rowspan=12, sticky=tk.EW, padx=5, pady=5)
+        self.text_box.grid(column=1, row=9, rowspan=16, sticky=tk.EW, padx=5, pady=5)
 
 
     def getSerialPorts(self):
@@ -259,13 +239,13 @@ class MainWindow(tk.Frame):
     def connect(self):
         global port
         try:
-            port = serial.Serial(self.serialPortSelection.get(),
-                                     int(self.baudRateEntry.get()), timeout=0,
-                                     writeTimeout=0)  # crude clean up of the port string
+            port = serial.Serial(self.serialPortSelection.get(), int(self.baudRateEntry.get()), timeout=0, writeTimeout=0)
         except IOError:
             port.close()
             port.open()
-            print("Port was already open, closed and opened again!")
+
+        # Wait for "Arduino is ready" message to be received
+        self.waitForArduino()
 
         connected = True
         self.statusIndicator.delete('1.0', tk.END)
@@ -297,6 +277,8 @@ class MainWindow(tk.Frame):
         self.fileDisplayText.delete("1.0", tk.END)
         gcodeFile = open(selectedFilePath, 'r')
         self.fileDisplayText.insert(tk.INSERT, gcodeFile.read())
+        self.fileAsString = str(self.fileDisplayText.get("1.0", "end-1c"))
+        self.fileAsString = self.fileAsString.splitlines()
         gcodeFile.close()
 
 
@@ -309,16 +291,16 @@ class MainWindow(tk.Frame):
         gcodeFile.close()
 
 
-    # TODO: Either use this, or find another solution
+    """ Wait for a message from the Arduino to give it time to reset """
     def waitForArduino(self):
-        # wait until the Arduino sends 'ok' - allows time for Arduino reset
-        # it also ensures that any bytes left over from a previous message are discarded
+        # wait until the Arduino sends 'Arduino is ready' - allows time for Arduino reset
+        # it also ensures that any bytes left over  from a previous message are discarded
         msg = ""
-        while msg.find("ok") == -1:
+
+        while msg.find("Arduino is ready") == -1:
             while port.inWaiting() == 0:
                 pass
             msg = self.recvFromArduino()
-            print(f'msg: {msg}')
 
 
     def recvFromArduino(self):
@@ -328,16 +310,13 @@ class MainWindow(tk.Frame):
         # wait for the start character
         while x != startMarker:
             x = port.read().decode("ascii")
-            print(x)
         # save data until the end marker is found
         while x != endMarker:
-            print(x)
             if x != startMarker:
                 ck = ck + x
                 byteCount += 1
             x = port.read().decode("ascii")
 
-        print(f'ck: {ck}')
         return ck
 
 
@@ -346,26 +325,18 @@ class MainWindow(tk.Frame):
         port.write(sendStr.encode())
 
 
-    def sendGcode(self):
-
-        numLoops = len(self.testData)
-        print(numLoops)
-        waitingForReply = False
-
+    def sendGcode(self, gcode):
+        print(self.fileAsString)
+        numLoops = len(gcode)
         n = 0
         while n < numLoops:
-            gstr = self.testData[n]
-            print(gstr)
-
-            if waitingForReply == False:
-                self.sendToArduino(gstr)
-                waitingForReply = True
-                print("sent")
-            if waitingForReply == True:
-                while port.inWaiting() == 0:
-                    pass
-                n += 1
-                waitingForReply = False
+            gstr = gcode[n]
+            # Insert start and end markers
+            gstr = ''.join((startMarker, gstr, endMarker))
+            self.sendToArduino(gstr)
+            self.waitForArduino()
+            root.update()
+            n += 1
 
 
     #TODO: make jogCNC one function rather than 6
@@ -408,22 +379,20 @@ class MainWindow(tk.Frame):
         zPosAbs -= float(self.stepZ.get())
         port.write(str.encode(f'<G1 Z{zPosAbs}>'))
 
+
     def moveServo(self):
         port.write(str.encode('<P1 0.4>')) # Move Servo to 40% of it's range
         # TODO: this is currently not doing anything...
 
 
     def readSerial(self):
-        newBuf = ""
+        newBuf = ''
+        global oldBuf
         while True:
             c = port.readline().decode("ascii")  # attempt to read a character from Serial
             # was anything read?
             if len(c) == 0:
                 break
-
-            # get the buffer from outside of this function
-
-            global oldBuf
 
             # check if character is a delimeter
             if c == '\r':
@@ -453,9 +422,7 @@ class DrawWindow(tk.Canvas, MainWindow):
         self.initCanvas()
         # Bind onclick() function to left mouse button
         self.canvas.bind('<Button-1>', self.onclick)
-        self.genDest = ''
-        self.genSource = ''
-        self.genPath = ''
+        self.fillRowCode = []
 
 
     def initCanvas(self):
@@ -475,9 +442,8 @@ class DrawWindow(tk.Canvas, MainWindow):
             # Col 1: A1 (36), B1, C1, ... H1 (43)
             # Next column to the right is 9mm from the previous
             16: (100.686, -5.957), 17: (100.686, 3.043), 18: (100.686, 12.043), 19: (100.686, 21.043),
-            20:(100.686, 30.043), 21:(100.686, 39.043), 22: (100.686, 48.043), 23:  (100.686, 57.043)
+            20: (100.686, 30.043), 21: (100.686, 39.043), 22: (100.686, 48.043), 23: (100.686, 57.043)
         }
-
 
         self.canvas = Canvas(self.parent)
         self.canvas.config(height=200)
@@ -545,13 +511,19 @@ class DrawWindow(tk.Canvas, MainWindow):
             # Each column 45 across
             x += 23.6
 
+        # Not yet configured
+
+        # self.runButton = tk.Button(self.parent, text='Run', width=15, command=self.sendGenPath)
+        # self.runButton.grid(column=2, row=9, padx=20, pady=5)
+
+
+
         # Buttons and labels after canvas
         self.sendPathLabel = tk.Label(self.parent, text='Serial Dilution:')
         self.sendPathLabel.grid(column=2, row=8, sticky=tk.W, padx=5, pady=5)
-        self.fillRowButton = tk.Button(self.parent, text='Fill Row', width = 15, command=self.fillRow)
+        self.fillRowButton = tk.Button(self.parent, text='Fill Row', width=15,
+                                       command=lambda: [self.fillRow(), MainWindow.sendGcode(self,self.fillRowCode)])
         self.fillRowButton.grid(column=2, row=9, sticky=tk.W, padx=5, pady=5)
-        self.runButton = tk.Button(self.parent, text='Run', width=15, command=self.sendGenPath)
-        self.runButton.grid(column=2, row=9, padx=20, pady=5)
 
         # Text box for errors:
         self.errorLabel = tk.Label(self.parent, text='Status:')
@@ -572,14 +544,22 @@ class DrawWindow(tk.Canvas, MainWindow):
         self.current_color = self.canvas.itemcget(self.item, 'fill')
         if self.item_type == "oval" and self.item[0] < 15 and self.item[0] > 8:
             if self.current_color == 'white':
-                self.canvas.itemconfig(self.item, fill='sky blue')
+                self.canvas.itemconfig(self.item[0], fill='sky blue')
             else:
-                self.canvas.itemconfig(self.item, fill='white')
+                self.canvas.itemconfig(self.item[0], fill='white')
         if self.item_type == "text" and self.item[0] > 15 and self.item[0] < 24:
             if self.current_color == 'blue':
-                self.canvas.itemconfig(self.item, fill='red')
+                self.canvas.itemconfig(self.item[0], fill='red')
             else:
-                self.canvas.itemconfig(self.item, fill='blue')
+                self.canvas.itemconfig(self.item[0], fill='blue')
+
+
+    def create_circle(self, x, y, r, canvas):
+        x0 = x - r
+        y0 = y - r
+        x1 = x + r
+        y1 = y + r
+        return self.canvas.create_oval(x0, y0, x1, y1, fill='white')
 
 
     def fillRow(self):
@@ -595,63 +575,20 @@ class DrawWindow(tk.Canvas, MainWindow):
         xPos = self.destLoc[self.item[0]][0]
         if self.item[0] in self.destLoc:
             while numCols > 0:
-                self.genPath += f'G1 X{self.sourceLoc[8][0]}\nG1 Y{self.sourceLoc[8][1]}\n' # Beaker
-                self.genPath += f'G1 X{xPos}\nG1 Y{self.destLoc[self.item[0]][1]}\n'
+                self.fillRowCode.append(f'G1 X{self.sourceLoc[8][0]}')
+                self.fillRowCode.append(f'G1 Y{self.sourceLoc[8][1]}')            # Beaker
+                self.fillRowCode.append(f'G1 X{xPos}')
+                self.fillRowCode.append(f'G1 Y{self.destLoc[self.item[0]][1]}')   # Microplate
                 # Move z-axis and plunge
                 # ...
-                # self.genPath.splitlines()
+                # self.fillRowCode.splitlines()
 
                 # Coord list is probably not correct right now
-                coordList.append((self.destLoc[self.item[0]][0], self.destLoc[self.item[0]][1]))
+                # coordList.append((self.destLoc[self.item[0]][0], self.destLoc[self.item[0]][1]))
 
                 # Next column
                 numCols -= 1
                 xPos += 9
-
-        sendLines = self.genPath.splitlines()
-        for line in sendLines:
-            print(line)
-            port.write(str.encode('<'))
-            port.write(line.encode())
-            port.write(str.encode('>'))
-
-            # flush everything
-            port.flushInput()
-            port.flushOutput()
-        # print(self.genPath)
-        # print(xPos)
-
-
-
-
-    def sendGenPath(self):
-        #TODO: Find way to reuse sendGcode function here (maybe)
-
-        # flush everything
-        port.flushInput()
-        port.flushOutput()
-
-        #TODO: figure out how to get erase g-code data and add option to save these instructions
-
-        # Clear the G-code text window
-        # self.fileDisplayText.delete("1.0", tk.END)
-        # Add generated path to text window
-        # MainWindow.fileDisplayText.insert(tk.INSERT, self.genPathtxt)
-
-        # print(self.genPath)
-
-        # for line in self.genPath:
-        #     port.write(str.encode('<'))
-        #     port.write(line.encode())
-        #     port.write(str.encode('>'))
-
-
-    def create_circle(self, x, y, r, canvas):
-        x0 = x - r
-        y0 = y - r
-        x1 = x + r
-        y1 = y + r
-        return self.canvas.create_oval(x0, y0, x1, y1, fill='white')
 
 
 # TODO: figure out how to plot this data LIVE rather than only plot it once
