@@ -1,2 +1,4 @@
 # AutomatedPipette
 The aim of this project was to build a computer-controlled system to automate common repetitive tasks in medical research (such as pipetting). Our primary focus in the development of the system was designing a product that was easy to use for non-technical clients whilst providing a meaningful optimisation of the medical research workflow. Thus, sensors were employed and integrated (leveraging computer vision) to remove as many bottlenecks as possible to its use. In addition, the system was designed to be both physically and electrically modular: the various components of the system can be adjusted in size independently, and the whole system can be disassembled to be stored within a compact space.
+
+![CNC!](https://user-images.githubusercontent.com/26650420/191900932-b6b5eeb6-6033-4c73-950f-17e1c84439f1.jpg)
