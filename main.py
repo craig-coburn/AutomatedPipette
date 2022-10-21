@@ -244,7 +244,7 @@ class MainWindow(tk.Frame):
             port.close()
             port.open()
 
-        # Wait for "Arduino is ready" message to be received
+        # Wait for "ok" message to be received
         self.waitForArduino()
 
         connected = True
@@ -293,11 +293,11 @@ class MainWindow(tk.Frame):
 
     """ Wait for a message from the Arduino to give it time to reset """
     def waitForArduino(self):
-        # wait until the Arduino sends 'Arduino is ready' - allows time for Arduino reset
+        # wait until the Arduino ' - allows time for Arduino reset
         # it also ensures that any bytes left over  from a previous message are discarded
         msg = ""
 
-        while msg.find("Arduino is ready") == -1:
+        while msg.find("ok") == -1:
             while port.inWaiting() == 0:
                 pass
             msg = self.recvFromArduino()
@@ -326,7 +326,6 @@ class MainWindow(tk.Frame):
 
 
     def sendGcode(self, gcode):
-        print(self.fileAsString)
         numLoops = len(gcode)
         n = 0
         while n < numLoops:
@@ -422,7 +421,9 @@ class DrawWindow(tk.Canvas, MainWindow):
         self.initCanvas()
         # Bind onclick() function to left mouse button
         self.canvas.bind('<Button-1>', self.onclick)
-        self.fillRowCode = []
+        self.fillSolCode = []
+        self.fillConCode = []
+        self.rowChoice = 0
 
 
     def initCanvas(self):
@@ -511,19 +512,16 @@ class DrawWindow(tk.Canvas, MainWindow):
             # Each column 45 across
             x += 23.6
 
-        # Not yet configured
-
-        # self.runButton = tk.Button(self.parent, text='Run', width=15, command=self.sendGenPath)
-        # self.runButton.grid(column=2, row=9, padx=20, pady=5)
-
-
+        self.runButton = tk.Button(self.parent, text='Run', width=15,
+                                   command=lambda: [self.fillCon(), MainWindow.sendGcode(self, self.fillConCode)])
+        self.runButton.grid(column=2, row=9, padx=20, pady=5)
 
         # Buttons and labels after canvas
         self.sendPathLabel = tk.Label(self.parent, text='Serial Dilution:')
         self.sendPathLabel.grid(column=2, row=8, sticky=tk.W, padx=5, pady=5)
-        self.fillRowButton = tk.Button(self.parent, text='Fill Row', width=15,
-                                       command=lambda: [self.fillRow(), MainWindow.sendGcode(self,self.fillRowCode)])
-        self.fillRowButton.grid(column=2, row=9, sticky=tk.W, padx=5, pady=5)
+        self.fillSolButton = tk.Button(self.parent, text='Fill Row', width=15,
+                                       command=lambda: [self.fillSol(), MainWindow.sendGcode(self, self.fillSolCode)])
+        self.fillSolButton.grid(column=2, row=9, sticky=tk.W, padx=5, pady=5)
 
         # Text box for errors:
         self.errorLabel = tk.Label(self.parent, text='Status:')
@@ -562,9 +560,9 @@ class DrawWindow(tk.Canvas, MainWindow):
         return self.canvas.create_oval(x0, y0, x1, y1, fill='white')
 
 
-    def fillRow(self):
+    def fillSol(self):
 
-        """ Transfer liquid (water) from beaker to selected row(s) """
+        """ Fill microplate row with solution (water) """
         if len(self.item) == 0:
             self.errorText.delete('1.0', tk.END)
             self.errorText.insert(tk.END, 'Select a microplate row to disperse stock solution')
@@ -573,22 +571,83 @@ class DrawWindow(tk.Canvas, MainWindow):
 
         numCols = 12
         xPos = self.destLoc[self.item[0]][0]
+        yPos = self.destLoc[self.item[0]][1]
+        self.rowChoice = self.item[0]  # Keep track of which row was chosen
+        print(f'row: {self.rowChoice}')
         if self.item[0] in self.destLoc:
+            self.errorText.delete('1.0', tk.END)
+            self.errorText.insert(tk.END, 'Filling microplate row with stock solution')
             while numCols > 0:
-                self.fillRowCode.append(f'G1 X{self.sourceLoc[8][0]}')
-                self.fillRowCode.append(f'G1 Y{self.sourceLoc[8][1]}')            # Beaker
-                self.fillRowCode.append(f'G1 X{xPos}')
-                self.fillRowCode.append(f'G1 Y{self.destLoc[self.item[0]][1]}')   # Microplate
+                self.fillSolCode.append('M1 P0')  # Move servo to top position
+                self.fillSolCode.append(f'G1 X{self.sourceLoc[8][1]} Y{self.sourceLoc[8][0]}')
+                # self.fillSolCode.append(f'G1 Y{self.sourceLoc[8][0]}')            # Beaker
                 # Move z-axis and plunge
-                # ...
-                # self.fillRowCode.splitlines()
+                self.fillSolCode.append('G1 Z-80') # Move z-axis down
+                self.fillSolCode.append('M1 P1')  # Actuate pipette
+                self.fillSolCode.append('M1 P0')  # Move servo to top position
+                self.fillSolCode.append('G1 Z0')  # Bring z-axis back up
+
+                self.fillSolCode.append(f'G1 X{yPos} Y{xPos}')
+                # self.fillSolCode.append(f'G1 Y{xPos}')   # Microplate
+                # Move z-axis and plunge
+                self.fillSolCode.append('G1 Z-80')  # Move z-axis down
+                self.fillSolCode.append('M1 P1')  # Actuate pipette
+                self.fillSolCode.append('G1 Z0')  # Bring z-axis back up
 
                 # Coord list is probably not correct right now
                 # coordList.append((self.destLoc[self.item[0]][0], self.destLoc[self.item[0]][1]))
 
                 # Next column
                 numCols -= 1
+
+                # Mixed up x-pos and y-pos, change this eventually
                 xPos += 9
+
+            # Go back to the zero position
+            self.fillSolCode.append('G1 X0 Y0 Z0')
+
+
+
+    def fillCon(self):
+
+        """ Fill microplate row with solution and perform serial dilution over this row """
+        numCols = 12
+        sourceChoice = 9 # default
+        # Chosen source:
+        if self.item[0] < 15:
+            sourceChoice = self.item[0]
+
+        print(sourceChoice)
+        self.rowChoice = self.item[0]  # Keep track of which row was chosen
+        xPos = self.destLoc[self.rowChoice][1]
+        yPos = self.destLoc[self.rowChoice][0]
+        if self.rowChoice == 0:
+            self.errorText.delete('1.0', tk.END)
+            self.errorText.insert(tk.END, 'You must first fill a row with stock solution')
+        else:
+            if sourceChoice in self.sourceLoc and sourceChoice > 8:
+                # First dispense concentrate into first row
+                self.fillConCode.append('M1 P0')  # Release pipette
+                self.fillConCode.append(f'G1 X{self.sourceLoc[sourceChoice][1]} Y{self.sourceLoc[sourceChoice][0]}')
+                # self.fillConCode.append(f'G1 Y{self.sourceLoc[sourceChoice][1]}')
+                self.fillConCode.append('M1 P1')  # Actuate pipette
+                self.fillConCode.append('G1 Z-60')  # Move z-axis down
+                self.fillConCode.append('M1 P0')  # Release pipette
+                self.fillConCode.append('G1 Z0')  # Bring z-axis back up
+                while numCols > 0:
+                    print(f'print this: {self.fillConCode}')
+                    # Go to dest loc column 1
+                    self.fillConCode.append(f'G1 X{xPos} Y{yPos}')
+                    # self.fillConCode.append(f'G1 Y{yPos}')   # Microplate
+                    self.fillConCode.append('G1 Z-84')  # Move z-axis down
+                    self.fillConCode.append('M1 P1')  # Actuate pipette
+                    self.fillConCode.append('M1 P0')  # Release pipette
+                    self.fillConCode.append('G1 Z-50')  # Bring z-axis back up
+                    numCols -= 1
+                    yPos += 9
+
+        # Go back to the zero position
+        self.fillConCode.append('G1 X0 Y0 Z0')
 
 
 # TODO: figure out how to plot this data LIVE rather than only plot it once
